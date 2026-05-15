@@ -119,6 +119,15 @@ async def receive_messages(websocket, state: SessionState, pending_login: dict):
 
                     print(f"\n[SERVER RESPONSE] {data}")
 
+                elif message_type == "session_terminated":
+                    message = data.get(
+                        "message",
+                        "This session was terminated because the account logged in elsewhere.",
+                    )
+                    print(f"\n[SESSION TERMINATED] {message}")
+                    await websocket.close()
+                    break
+
                 elif message_type == "key_exchange_request":
                     sender = data.get("from")
                     public_key_b64 = data.get("public_key")
@@ -147,9 +156,17 @@ async def receive_messages(websocket, state: SessionState, pending_login: dict):
                             session.peer_public_key_bytes,
                         )
                         session.session_key = derive_session_key(shared_secret)
+
+                        # The ephemeral private key is only needed for this one
+                        # key exchange operation. Clear it immediately after use
+                        # so replayed key exchange messages cannot re-derive the
+                        # same session key and reset replay counters.
+                        session.local_private_key = None
                         session.outgoing_counter = 0
                         session.highest_incoming_counter = -1
                     except Exception as exc:
+                        session.local_private_key = None
+                        session.session_key = None
                         print(f"\n[KEY EXCHANGE] Failed to process request from {sender}: {exc}")
                         continue
 
@@ -178,8 +195,19 @@ async def receive_messages(websocket, state: SessionState, pending_login: dict):
 
                     session = state.get_session(sender)
 
-                    if session is None or session.local_private_key is None:
-                        print(f"\n[KEY EXCHANGE] No pending local session for {sender}.")
+                    if session is None:
+                        print(f"\n[KEY EXCHANGE] No local session for {sender}.")
+                        continue
+
+                    if session.session_key is not None:
+                        print(
+                            f"\n[KEY EXCHANGE] Ignored unexpected key exchange response "
+                            f"from {sender}; session key already exists."
+                        )
+                        continue
+
+                    if session.local_private_key is None:
+                        print(f"\n[KEY EXCHANGE] No pending key exchange for {sender}.")
                         continue
 
                     session.peer_public_key_bytes = peer_public_key_bytes
@@ -190,9 +218,16 @@ async def receive_messages(websocket, state: SessionState, pending_login: dict):
                             session.peer_public_key_bytes,
                         )
                         session.session_key = derive_session_key(shared_secret)
+
+                        # Clear the ephemeral private key after successful use.
+                        # This makes key exchange completion a one-shot transition
+                        # and prevents replayed responses from resetting counters.
+                        session.local_private_key = None
                         session.outgoing_counter = 0
                         session.highest_incoming_counter = -1
                     except Exception as exc:
+                        session.local_private_key = None
+                        session.session_key = None
                         print(f"\n[KEY EXCHANGE] Failed to process response from {sender}: {exc}")
                         continue
 
@@ -353,6 +388,9 @@ async def main():
                     private_key, public_key_bytes = generate_x25519_keypair()
                     session.local_private_key = private_key
                     session.local_public_key_bytes = public_key_bytes
+
+                    # Starting a new key exchange intentionally invalidates the
+                    # previous session state for this peer.
                     session.session_key = None
                     session.outgoing_counter = 0
                     session.highest_incoming_counter = -1
