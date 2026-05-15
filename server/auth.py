@@ -9,13 +9,15 @@ DUMMY_PASSWORD_HASH = password_hasher.hash("dummy-password-for-timing-equalizati
 
 
 def register_user(username: str, password: str) -> tuple[bool, str]:
+    generic_registration_message = "If registration details are valid, the account is ready to use."
+
     if not isinstance(username, str) or not isinstance(password, str):
-        return False, "Registration could not be completed."
+        return False, generic_registration_message
 
     users = load_users()
 
     if username in users:
-        return False, "Registration could not be completed."
+        return True, generic_registration_message
 
     password_hash = password_hasher.hash(password)
 
@@ -24,7 +26,7 @@ def register_user(username: str, password: str) -> tuple[bool, str]:
     }
 
     save_users(users)
-    return True, "User registered successfully."
+    return True, generic_registration_message
 
 
 def authenticate_user(username: str, password: str) -> tuple[bool, str]:
