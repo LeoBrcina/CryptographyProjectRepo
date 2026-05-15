@@ -206,7 +206,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 if not delivered:
-                    manager.disconnect(recipient)
+                    manager.disconnect(recipient, recipient_socket)
                     await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is no longer reachable."
@@ -269,7 +269,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 if not delivered:
-                    manager.disconnect(recipient)
+                    manager.disconnect(recipient, recipient_socket)
                     await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is no longer reachable."
@@ -332,7 +332,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 if not delivered:
-                    manager.disconnect(recipient)
+                    manager.disconnect(recipient, recipient_socket)
                     await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is no longer reachable."
@@ -355,4 +355,4 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         if username:
-            manager.disconnect(username)
+            manager.disconnect(username, websocket)
