@@ -1,3 +1,6 @@
+import base64
+import binascii
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from server.auth import authenticate_user, register_user
@@ -5,6 +8,8 @@ from server.connection_manager import ConnectionManager
 
 app = FastAPI()
 manager = ConnectionManager()
+
+X25519_PUBLIC_KEY_LENGTH = 32
 
 
 def is_valid_username(username: str | None) -> bool:
@@ -18,6 +23,21 @@ def is_valid_username(username: str | None) -> bool:
 
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
     return all(char in allowed for char in username)
+
+
+def is_valid_x25519_public_key(public_key_b64) -> bool:
+    if not isinstance(public_key_b64, str):
+        return False
+
+    try:
+        public_key_bytes = base64.b64decode(
+            public_key_b64.encode("utf-8"),
+            validate=True,
+        )
+    except (binascii.Error, ValueError):
+        return False
+
+    return len(public_key_bytes) == X25519_PUBLIC_KEY_LENGTH
 
 
 @app.get("/")
@@ -194,10 +214,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
 
-                if not public_key:
+                if not is_valid_x25519_public_key(public_key):
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Recipient and public_key are required."
+                        "message": "Invalid X25519 public key."
                     })
                     continue
 
@@ -249,10 +269,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
 
-                if not public_key:
+                if not is_valid_x25519_public_key(public_key):
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Recipient and public_key are required."
+                        "message": "Invalid X25519 public key."
                     })
                     continue
 

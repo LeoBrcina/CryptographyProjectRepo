@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import json
 
 import websockets
@@ -15,6 +16,7 @@ from client.crypto_utils import (
 from client.session_state import SessionState
 
 SERVER_URL = "ws://127.0.0.1:8000/ws"
+X25519_PUBLIC_KEY_LENGTH = 32
 
 
 def normalize_username(username: str) -> str:
@@ -31,6 +33,24 @@ def is_valid_username(username: str) -> bool:
     return all(char in allowed for char in username)
 
 
+def decode_x25519_public_key(public_key_b64) -> bytes | None:
+    if not isinstance(public_key_b64, str):
+        return None
+
+    try:
+        public_key_bytes = base64.b64decode(
+            public_key_b64.encode("utf-8"),
+            validate=True,
+        )
+    except (binascii.Error, ValueError):
+        return None
+
+    if len(public_key_bytes) != X25519_PUBLIC_KEY_LENGTH:
+        return None
+
+    return public_key_bytes
+
+
 async def async_input(prompt: str) -> str:
     return await asyncio.to_thread(input, prompt)
 
@@ -38,130 +58,157 @@ async def async_input(prompt: str) -> str:
 async def receive_messages(websocket, state: SessionState, pending_login: dict):
     try:
         while True:
-            response = await websocket.recv()
-            data = json.loads(response)
+            try:
+                response = await websocket.recv()
+                data = json.loads(response)
 
-            message_type = data.get("type")
+                message_type = data.get("type")
 
-            if message_type == "incoming_encrypted_message":
-                sender = data.get("from")
-                nonce_b64 = data.get("nonce")
-                ciphertext_b64 = data.get("ciphertext")
-                counter = data.get("counter")
+                if message_type == "incoming_encrypted_message":
+                    sender = data.get("from")
+                    nonce_b64 = data.get("nonce")
+                    ciphertext_b64 = data.get("ciphertext")
+                    counter = data.get("counter")
 
-                if not sender or nonce_b64 is None or ciphertext_b64 is None or counter is None:
-                    print(f"\n[ENCRYPTED MESSAGE] Invalid encrypted payload: {data}")
-                    continue
+                    if not sender or nonce_b64 is None or ciphertext_b64 is None or counter is None:
+                        print(f"\n[ENCRYPTED MESSAGE] Invalid encrypted payload: {data}")
+                        continue
 
-                sender = normalize_username(sender)
+                    sender = normalize_username(sender)
 
-                session = state.get_session(sender)
+                    session = state.get_session(sender)
 
-                if session is None or session.session_key is None:
-                    print(f"\n[ENCRYPTED MESSAGE] No session key available for {sender}.")
-                    continue
+                    if session is None or session.session_key is None:
+                        print(f"\n[ENCRYPTED MESSAGE] No session key available for {sender}.")
+                        continue
 
-                if counter <= session.highest_incoming_counter:
-                    print(
-                        f"\n[REPLAY PROTECTION] Rejected message from {sender} "
-                        f"with counter={counter}."
-                    )
-                    continue
+                    if counter <= session.highest_incoming_counter:
+                        print(
+                            f"\n[REPLAY PROTECTION] Rejected message from {sender} "
+                            f"with counter={counter}."
+                        )
+                        continue
 
-                try:
-                    plaintext = decrypt_message_from_transport(
-                        session_key=session.session_key,
-                        sender=sender,
-                        recipient=state.logged_in_username,
-                        counter=counter,
-                        nonce_b64=nonce_b64,
-                        ciphertext_b64=ciphertext_b64,
-                    )
-                except InvalidTag:
-                    print(
-                        f"\n[ENCRYPTED MESSAGE] Authentication failed for message "
-                        f"from {sender}."
-                    )
-                    continue
-                except Exception as exc:
-                    print(f"\n[ENCRYPTED MESSAGE] Decryption error from {sender}: {exc}")
-                    continue
+                    try:
+                        plaintext = decrypt_message_from_transport(
+                            session_key=session.session_key,
+                            sender=sender,
+                            recipient=state.logged_in_username,
+                            counter=counter,
+                            nonce_b64=nonce_b64,
+                            ciphertext_b64=ciphertext_b64,
+                        )
+                    except InvalidTag:
+                        print(
+                            f"\n[ENCRYPTED MESSAGE] Authentication failed for message "
+                            f"from {sender}."
+                        )
+                        continue
+                    except Exception as exc:
+                        print(f"\n[ENCRYPTED MESSAGE] Decryption error from {sender}: {exc}")
+                        continue
 
-                session.highest_incoming_counter = counter
-                print(f"\n[NEW MESSAGE - ENCRYPTED] From {sender}: {plaintext}")
+                    session.highest_incoming_counter = counter
+                    print(f"\n[NEW MESSAGE - ENCRYPTED] From {sender}: {plaintext}")
 
-            elif message_type == "login_result":
-                success = data.get("success", False)
+                elif message_type == "login_result":
+                    success = data.get("success", False)
 
-                if success and pending_login.get("username"):
-                    state.set_logged_in_user(pending_login["username"])
+                    if success and pending_login.get("username"):
+                        state.set_logged_in_user(pending_login["username"])
 
-                print(f"\n[SERVER RESPONSE] {data}")
+                    print(f"\n[SERVER RESPONSE] {data}")
 
-            elif message_type == "key_exchange_request":
-                sender = data.get("from")
-                public_key_b64 = data.get("public_key")
+                elif message_type == "key_exchange_request":
+                    sender = data.get("from")
+                    public_key_b64 = data.get("public_key")
 
-                if not sender or not public_key_b64:
-                    print(f"\n[SERVER RESPONSE] Invalid key exchange request: {data}")
-                    continue
+                    if not sender or not is_valid_username(sender):
+                        print(f"\n[KEY EXCHANGE] Invalid sender in request: {data}")
+                        continue
 
-                sender = normalize_username(sender)
-                session = state.get_or_create_session(sender)
+                    sender = normalize_username(sender)
+                    peer_public_key_bytes = decode_x25519_public_key(public_key_b64)
 
-                peer_public_key_bytes = base64.b64decode(public_key_b64.encode("utf-8"))
-                session.peer_public_key_bytes = peer_public_key_bytes
+                    if peer_public_key_bytes is None:
+                        print(f"\n[KEY EXCHANGE] Rejected malformed public key from {sender}.")
+                        continue
 
-                private_key, public_key_bytes = generate_x25519_keypair()
-                session.local_private_key = private_key
-                session.local_public_key_bytes = public_key_bytes
+                    session = state.get_or_create_session(sender)
+                    session.peer_public_key_bytes = peer_public_key_bytes
 
-                shared_secret = derive_shared_secret(
-                    session.local_private_key,
-                    session.peer_public_key_bytes,
-                )
-                session.session_key = derive_session_key(shared_secret)
-                session.outgoing_counter = 0
-                session.highest_incoming_counter = -1
+                    try:
+                        private_key, public_key_bytes = generate_x25519_keypair()
+                        session.local_private_key = private_key
+                        session.local_public_key_bytes = public_key_bytes
 
-                await websocket.send(json.dumps({
-                    "type": "key_exchange_response",
-                    "to": sender,
-                    "public_key": base64.b64encode(public_key_bytes).decode("utf-8")
-                }))
+                        shared_secret = derive_shared_secret(
+                            session.local_private_key,
+                            session.peer_public_key_bytes,
+                        )
+                        session.session_key = derive_session_key(shared_secret)
+                        session.outgoing_counter = 0
+                        session.highest_incoming_counter = -1
+                    except Exception as exc:
+                        print(f"\n[KEY EXCHANGE] Failed to process request from {sender}: {exc}")
+                        continue
 
-                print(f"\n[KEY EXCHANGE] Received request from {sender}. Session key derived.")
+                    await websocket.send(json.dumps({
+                        "type": "key_exchange_response",
+                        "to": sender,
+                        "public_key": base64.b64encode(public_key_bytes).decode("utf-8")
+                    }))
 
-            elif message_type == "key_exchange_response":
-                sender = data.get("from")
-                public_key_b64 = data.get("public_key")
+                    print(f"\n[KEY EXCHANGE] Received request from {sender}. Session key derived.")
 
-                if not sender or not public_key_b64:
-                    print(f"\n[SERVER RESPONSE] Invalid key exchange response: {data}")
-                    continue
+                elif message_type == "key_exchange_response":
+                    sender = data.get("from")
+                    public_key_b64 = data.get("public_key")
 
-                sender = normalize_username(sender)
-                session = state.get_session(sender)
+                    if not sender or not is_valid_username(sender):
+                        print(f"\n[KEY EXCHANGE] Invalid sender in response: {data}")
+                        continue
 
-                if session is None or session.local_private_key is None:
-                    print(f"\n[KEY EXCHANGE] No pending local session for {sender}.")
-                    continue
+                    sender = normalize_username(sender)
+                    peer_public_key_bytes = decode_x25519_public_key(public_key_b64)
 
-                peer_public_key_bytes = base64.b64decode(public_key_b64.encode("utf-8"))
-                session.peer_public_key_bytes = peer_public_key_bytes
+                    if peer_public_key_bytes is None:
+                        print(f"\n[KEY EXCHANGE] Rejected malformed public key from {sender}.")
+                        continue
 
-                shared_secret = derive_shared_secret(
-                    session.local_private_key,
-                    session.peer_public_key_bytes,
-                )
-                session.session_key = derive_session_key(shared_secret)
-                session.outgoing_counter = 0
-                session.highest_incoming_counter = -1
+                    session = state.get_session(sender)
 
-                print(f"\n[KEY EXCHANGE] Response received from {sender}. Session key derived.")
+                    if session is None or session.local_private_key is None:
+                        print(f"\n[KEY EXCHANGE] No pending local session for {sender}.")
+                        continue
 
-            else:
-                print(f"\n[SERVER RESPONSE] {data}")
+                    session.peer_public_key_bytes = peer_public_key_bytes
+
+                    try:
+                        shared_secret = derive_shared_secret(
+                            session.local_private_key,
+                            session.peer_public_key_bytes,
+                        )
+                        session.session_key = derive_session_key(shared_secret)
+                        session.outgoing_counter = 0
+                        session.highest_incoming_counter = -1
+                    except Exception as exc:
+                        print(f"\n[KEY EXCHANGE] Failed to process response from {sender}: {exc}")
+                        continue
+
+                    print(f"\n[KEY EXCHANGE] Response received from {sender}. Session key derived.")
+
+                else:
+                    print(f"\n[SERVER RESPONSE] {data}")
+
+            except json.JSONDecodeError:
+                print("\n[CLIENT] Received invalid JSON message. Ignoring.")
+                continue
+            except websockets.ConnectionClosed:
+                raise
+            except Exception as exc:
+                print(f"\n[CLIENT] Ignored malformed inbound message: {exc}")
+                continue
 
     except websockets.ConnectionClosed:
         print("\nDisconnected from server.")
