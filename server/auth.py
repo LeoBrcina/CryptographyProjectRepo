@@ -5,12 +5,14 @@ from server.storage import load_users, save_users
 
 password_hasher = PasswordHasher()
 
+DUMMY_PASSWORD_HASH = password_hasher.hash("dummy-password-for-timing-equalization")
+
 
 def register_user(username: str, password: str) -> tuple[bool, str]:
     users = load_users()
 
     if username in users:
-        return False, "User already exists."
+        return False, "Registration could not be completed."
 
     password_hash = password_hasher.hash(password)
 
@@ -25,15 +27,16 @@ def register_user(username: str, password: str) -> tuple[bool, str]:
 def authenticate_user(username: str, password: str) -> tuple[bool, str]:
     users = load_users()
 
-    if username not in users:
-        return False, "User does not exist."
-
-    stored_hash = users[username]["password_hash"]
+    stored_hash = users.get(username, {}).get("password_hash", DUMMY_PASSWORD_HASH)
 
     try:
         password_hasher.verify(stored_hash, password)
-        return True, "Authentication successful."
     except VerifyMismatchError:
-        return False, "Invalid password."
+        return False, "Invalid username or password."
     except Exception:
-        return False, "Authentication error."
+        return False, "Invalid username or password."
+
+    if username not in users:
+        return False, "Invalid username or password."
+
+    return True, "Authentication successful."
