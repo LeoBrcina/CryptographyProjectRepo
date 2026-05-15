@@ -148,6 +148,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
             elif message_type == "list_online":
+                if username is None:
+                    await safe_send_json(websocket, {
+                        "type": "error",
+                        "message": "You must be logged in to list online users."
+                    })
+                    continue
+
                 await safe_send_json(websocket, {
                     "type": "online_users",
                     "users": manager.list_online_users()
