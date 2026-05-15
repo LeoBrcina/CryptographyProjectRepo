@@ -1,5 +1,6 @@
 import base64
 import binascii
+import json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -12,8 +13,8 @@ manager = ConnectionManager()
 X25519_PUBLIC_KEY_LENGTH = 32
 
 
-def is_valid_username(username: str | None) -> bool:
-    if username is None:
+def is_valid_username(username) -> bool:
+    if not isinstance(username, str):
         return False
 
     username = username.strip()
@@ -23,6 +24,10 @@ def is_valid_username(username: str | None) -> bool:
 
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
     return all(char in allowed for char in username)
+
+
+def is_valid_password(password) -> bool:
+    return isinstance(password, str) and len(password) > 0
 
 
 def is_valid_x25519_public_key(public_key_b64) -> bool:
@@ -40,6 +45,14 @@ def is_valid_x25519_public_key(public_key_b64) -> bool:
     return len(public_key_bytes) == X25519_PUBLIC_KEY_LENGTH
 
 
+async def safe_send_json(websocket: WebSocket, payload: dict) -> bool:
+    try:
+        await websocket.send_json(payload)
+        return True
+    except Exception:
+        return False
+
+
 @app.get("/")
 def root():
     return {"message": "Secure chat server is running."}
@@ -52,32 +65,49 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                raise
+            except json.JSONDecodeError:
+                await safe_send_json(websocket, {
+                    "type": "error",
+                    "message": "Invalid JSON message."
+                })
+                continue
+            except Exception:
+                await safe_send_json(websocket, {
+                    "type": "error",
+                    "message": "Invalid WebSocket message."
+                })
+                continue
+
+            if not isinstance(data, dict):
+                await safe_send_json(websocket, {
+                    "type": "error",
+                    "message": "Message must be a JSON object."
+                })
+                continue
+
             message_type = data.get("type")
 
             if message_type == "register":
                 username_input = data.get("username")
                 password_input = data.get("password")
 
-                if not username_input or not password_input:
-                    await websocket.send_json({
+                if not is_valid_username(username_input) or not is_valid_password(password_input):
+                    await safe_send_json(websocket, {
                         "type": "register_result",
                         "success": False,
                         "message": "Username and password are required."
                     })
                     continue
 
-                if not is_valid_username(username_input):
-                    await websocket.send_json({
-                        "type": "register_result",
-                        "success": False,
-                        "message": "Username must be 3-32 characters and use only letters, numbers, _ or -."
-                    })
-                    continue
+                username_input = username_input.strip()
 
-                success, message = register_user(username_input.strip(), password_input)
+                success, message = register_user(username_input, password_input)
 
-                await websocket.send_json({
+                await safe_send_json(websocket, {
                     "type": "register_result",
                     "success": success,
                     "message": message
@@ -87,43 +117,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 username_input = data.get("username")
                 password_input = data.get("password")
 
-                if not username_input or not password_input:
-                    await websocket.send_json({
+                if not is_valid_username(username_input) or not is_valid_password(password_input):
+                    await safe_send_json(websocket, {
                         "type": "login_result",
                         "success": False,
-                        "message": "Username and password are required."
+                        "message": "Invalid username or password."
                     })
                     continue
 
-                if not is_valid_username(username_input):
-                    await websocket.send_json({
-                        "type": "login_result",
-                        "success": False,
-                        "message": "Invalid username format."
-                    })
-                    continue
+                username_input = username_input.strip()
 
-                success, message = authenticate_user(username_input.strip(), password_input)
+                success, message = authenticate_user(username_input, password_input)
 
                 if success:
-                    username = username_input.strip()
+                    username = username_input
                     await manager.connect(username, websocket)
 
-                await websocket.send_json({
+                await safe_send_json(websocket, {
                     "type": "login_result",
                     "success": success,
                     "message": message
                 })
 
             elif message_type == "list_online":
-                await websocket.send_json({
+                await safe_send_json(websocket, {
                     "type": "online_users",
                     "users": manager.list_online_users()
                 })
 
             elif message_type == "send_encrypted_message":
                 if username is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You must be logged in to send encrypted messages."
                     })
@@ -135,7 +159,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 counter = data.get("counter")
 
                 if not is_valid_username(recipient):
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Invalid recipient username."
                     })
@@ -144,21 +168,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient = recipient.strip()
 
                 if recipient == username:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You cannot send encrypted messages to yourself."
                     })
                     continue
 
-                if nonce is None or ciphertext is None or counter is None:
-                    await websocket.send_json({
+                if not isinstance(nonce, str) or not isinstance(ciphertext, str):
+                    await safe_send_json(websocket, {
                         "type": "error",
-                        "message": "Recipient, nonce, ciphertext, and counter are required."
+                        "message": "Nonce and ciphertext must be strings."
                     })
                     continue
 
                 if not isinstance(counter, int) or counter < 1:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Counter must be a positive integer."
                     })
@@ -167,13 +191,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient_socket = manager.get_connection(recipient)
 
                 if recipient_socket is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is not online."
                     })
                     continue
 
-                await recipient_socket.send_json({
+                delivered = await safe_send_json(recipient_socket, {
                     "type": "incoming_encrypted_message",
                     "from": username,
                     "nonce": nonce,
@@ -181,7 +205,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     "counter": counter
                 })
 
-                await websocket.send_json({
+                if not delivered:
+                    manager.disconnect(recipient)
+                    await safe_send_json(websocket, {
+                        "type": "error",
+                        "message": f"User '{recipient}' is no longer reachable."
+                    })
+                    continue
+
+                await safe_send_json(websocket, {
                     "type": "send_encrypted_result",
                     "success": True,
                     "message": f"Encrypted message sent to {recipient}."
@@ -189,7 +221,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif message_type == "key_exchange_request":
                 if username is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You must be logged in to start key exchange."
                     })
@@ -199,7 +231,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 public_key = data.get("public_key")
 
                 if not is_valid_username(recipient):
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Invalid recipient username."
                     })
@@ -208,14 +240,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient = recipient.strip()
 
                 if recipient == username:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You cannot start key exchange with yourself."
                     })
                     continue
 
                 if not is_valid_x25519_public_key(public_key):
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Invalid X25519 public key."
                     })
@@ -224,19 +256,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient_socket = manager.get_connection(recipient)
 
                 if recipient_socket is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is not online."
                     })
                     continue
 
-                await recipient_socket.send_json({
+                delivered = await safe_send_json(recipient_socket, {
                     "type": "key_exchange_request",
                     "from": username,
                     "public_key": public_key
                 })
 
-                await websocket.send_json({
+                if not delivered:
+                    manager.disconnect(recipient)
+                    await safe_send_json(websocket, {
+                        "type": "error",
+                        "message": f"User '{recipient}' is no longer reachable."
+                    })
+                    continue
+
+                await safe_send_json(websocket, {
                     "type": "key_exchange_request_sent",
                     "success": True,
                     "message": f"Key exchange request sent to {recipient}."
@@ -244,7 +284,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif message_type == "key_exchange_response":
                 if username is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You must be logged in to respond to key exchange."
                     })
@@ -254,7 +294,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 public_key = data.get("public_key")
 
                 if not is_valid_username(recipient):
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Invalid recipient username."
                     })
@@ -263,14 +303,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient = recipient.strip()
 
                 if recipient == username:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You cannot respond to key exchange with yourself."
                     })
                     continue
 
                 if not is_valid_x25519_public_key(public_key):
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "Invalid X25519 public key."
                     })
@@ -279,30 +319,40 @@ async def websocket_endpoint(websocket: WebSocket):
                 recipient_socket = manager.get_connection(recipient)
 
                 if recipient_socket is None:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{recipient}' is not online."
                     })
                     continue
 
-                await recipient_socket.send_json({
+                delivered = await safe_send_json(recipient_socket, {
                     "type": "key_exchange_response",
                     "from": username,
                     "public_key": public_key
                 })
 
-                await websocket.send_json({
+                if not delivered:
+                    manager.disconnect(recipient)
+                    await safe_send_json(websocket, {
+                        "type": "error",
+                        "message": f"User '{recipient}' is no longer reachable."
+                    })
+                    continue
+
+                await safe_send_json(websocket, {
                     "type": "key_exchange_response_sent",
                     "success": True,
                     "message": f"Key exchange response sent to {recipient}."
                 })
 
             else:
-                await websocket.send_json({
+                await safe_send_json(websocket, {
                     "type": "error",
                     "message": "Unknown message type."
                 })
 
     except WebSocketDisconnect:
+        pass
+    finally:
         if username:
             manager.disconnect(username)

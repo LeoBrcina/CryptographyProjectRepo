@@ -9,6 +9,9 @@ DUMMY_PASSWORD_HASH = password_hasher.hash("dummy-password-for-timing-equalizati
 
 
 def register_user(username: str, password: str) -> tuple[bool, str]:
+    if not isinstance(username, str) or not isinstance(password, str):
+        return False, "Registration could not be completed."
+
     users = load_users()
 
     if username in users:
@@ -25,6 +28,9 @@ def register_user(username: str, password: str) -> tuple[bool, str]:
 
 
 def authenticate_user(username: str, password: str) -> tuple[bool, str]:
+    if not isinstance(username, str) or not isinstance(password, str):
+        return False, "Invalid username or password."
+
     users = load_users()
 
     stored_hash = users.get(username, {}).get("password_hash", DUMMY_PASSWORD_HASH)
