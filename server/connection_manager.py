@@ -35,6 +35,16 @@ class ConnectionManager:
 
         del self.active_connections[username]
 
+    def disconnect_socket(self, websocket: WebSocket) -> None:
+        usernames_to_remove = [
+            username
+            for username, active_websocket in self.active_connections.items()
+            if active_websocket is websocket
+        ]
+
+        for username in usernames_to_remove:
+            del self.active_connections[username]
+
     def get_connection(self, username: str) -> WebSocket | None:
         return self.active_connections.get(username)
 

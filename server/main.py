@@ -114,6 +114,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
             elif message_type == "login":
+                if username is not None:
+                    await safe_send_json(websocket, {
+                        "type": "login_result",
+                        "success": False,
+                        "message": "This WebSocket session is already authenticated."
+                    })
+                    continue
+
                 username_input = data.get("username")
                 password_input = data.get("password")
 
@@ -354,5 +362,4 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        if username:
-            manager.disconnect(username, websocket)
+        manager.disconnect(username, websocket)
