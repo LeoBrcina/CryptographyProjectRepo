@@ -6,24 +6,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from server.auth import authenticate_user, register_user
 from server.connection_manager import ConnectionManager
+from shared.protocol import X25519_PUBLIC_KEY_LENGTH, is_valid_username
 
 app = FastAPI()
 manager = ConnectionManager()
-
-X25519_PUBLIC_KEY_LENGTH = 32
-
-
-def is_valid_username(username) -> bool:
-    if not isinstance(username, str):
-        return False
-
-    username = username.strip()
-
-    if len(username) < 3 or len(username) > 32:
-        return False
-
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-    return all(char in allowed for char in username)
 
 
 def is_valid_password(password) -> bool:

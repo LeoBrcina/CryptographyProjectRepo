@@ -14,23 +14,13 @@ from client.crypto_utils import (
     generate_x25519_keypair,
 )
 from client.session_state import SessionState
+from shared.protocol import (
+    X25519_PUBLIC_KEY_LENGTH,
+    is_valid_username,
+    normalize_username,
+)
 
 SERVER_URL = "ws://127.0.0.1:8000/ws"
-X25519_PUBLIC_KEY_LENGTH = 32
-
-
-def normalize_username(username: str) -> str:
-    return username.strip()
-
-
-def is_valid_username(username: str) -> bool:
-    username = normalize_username(username)
-
-    if len(username) < 3 or len(username) > 32:
-        return False
-
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-    return all(char in allowed for char in username)
 
 
 def decode_x25519_public_key(public_key_b64) -> bytes | None:
