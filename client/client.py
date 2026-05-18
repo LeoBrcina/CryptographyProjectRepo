@@ -2,6 +2,7 @@ import asyncio
 import base64
 import binascii
 import json
+import getpass
 
 import websockets
 from cryptography.exceptions import InvalidTag
@@ -44,6 +45,8 @@ def decode_x25519_public_key(public_key_b64) -> bytes | None:
 async def async_input(prompt: str) -> str:
     return await asyncio.to_thread(input, prompt)
 
+async def async_password(prompt: str) -> str:
+    return await asyncio.to_thread(getpass.getpass, prompt)
 
 async def receive_messages(websocket, state: SessionState, pending_login: dict):
     try:
@@ -265,7 +268,7 @@ async def main():
 
                 if choice == "1":
                     username = normalize_username(await async_input("Username: "))
-                    password = (await async_input("Password: ")).strip()
+                    password = await async_password("Password: ")
 
                     if not is_valid_username(username):
                         print("Username must be 3-32 characters and use only letters, numbers, _ or -.")
@@ -279,7 +282,7 @@ async def main():
 
                 elif choice == "2":
                     username = normalize_username(await async_input("Username: "))
-                    password = (await async_input("Password: ")).strip()
+                    password = await async_password("Password: ")
 
                     if not is_valid_username(username):
                         print("Invalid username format.")
