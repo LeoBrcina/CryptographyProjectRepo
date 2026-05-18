@@ -369,4 +369,4 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(username, websocket)
+        manager.disconnect_socket(websocket)
